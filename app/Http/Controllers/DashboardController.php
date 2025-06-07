@@ -1,28 +1,50 @@
 <?php
+
 namespace App\Http\Controllers;
 
 use App\Models\LeaveRequest;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 
 class DashboardController extends Controller
 {
     public function index()
     {
-        $user = Auth::user();
+        $user = auth()->user();
         
+        $stats = [
+            'total_requests' => 0,
+            'pending_requests' => 0,
+            'approved_requests' => 0,
+            'rejected_requests' => 0,
+        ];
+
         if ($user->isAdmin()) {
-            $pendingRequests = LeaveRequest::where('status', 'pending')->count();
-            $totalRequests = LeaveRequest::count();
-            $recentRequests = LeaveRequest::with('user')->latest()->take(5)->get();
+            $stats = [
+                'total_requests' => LeaveRequest::count(),
+                'pending_requests' => LeaveRequest::where('status', 'pending')->count(),
+                'approved_requests' => LeaveRequest::where('status', 'approved')->count(),
+                'rejected_requests' => LeaveRequest::where('status', 'rejected')->count(),
+            ];
             
-            return view('dashboard.admin', compact('pendingRequests', 'totalRequests', 'recentRequests'));
+            $recentRequests = LeaveRequest::with(['user', 'leaveType'])
+                ->orderBy('created_at', 'desc')
+                ->limit(5)
+                ->get();
         } else {
-            $userRequests = $user->leaveRequests()->latest()->take(5)->get();
-            $pendingCount = $user->leaveRequests()->where('status', 'pending')->count();
-            $approvedCount = $user->leaveRequests()->where('status', 'approved')->count();
+            $stats = [
+                'total_requests' => $user->leaveRequests()->count(),
+                'pending_requests' => $user->leaveRequests()->where('status', 'pending')->count(),
+                'approved_requests' => $user->leaveRequests()->where('status', 'approved')->count(),
+                'rejected_requests' => $user->leaveRequests()->where('status', 'rejected')->count(),
+            ];
             
-            return view('dashboard.employee', compact('userRequests', 'pendingCount', 'approvedCount'));
+            $recentRequests = $user->leaveRequests()
+                ->with('leaveType')
+                ->orderBy('created_at', 'desc')
+                ->limit(5)
+                ->get();
         }
+
+        return view('dashboard', compact('stats', 'recentRequests'));
     }
 }
