@@ -1,33 +1,49 @@
 <?php
+
 namespace App\Http\Controllers;
 
 use App\Models\LeaveRequest;
+use App\Models\LeaveType;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use Carbon\Carbon;
 
 class LeaveRequestController extends Controller
 {
     public function index()
     {
-        if (Auth::user()->isAdmin()) {
-            $leaveRequests = LeaveRequest::with('user')->latest()->paginate(10);
-        } else {
-            $leaveRequests = Auth::user()->leaveRequests()->latest()->paginate(10);
-        }
+        $user = auth()->user();
         
-        return view('leave-requests.index', compact('leaveRequests'));
+        if ($user->isAdmin()) {
+            $requests = LeaveRequest::with(['user', 'leaveType', 'approver'])
+                ->orderBy('created_at', 'desc')
+                ->paginate(10);
+        } elseif ($user->isManager()) {
+            $requests = LeaveRequest::with(['user', 'leaveType', 'approver'])
+                ->whereHas('user', function($query) use ($user) {
+                    $query->where('department_id', $user->department_id);
+                })
+                ->orderBy('created_at', 'desc')
+                ->paginate(10);
+        } else {
+            $requests = $user->leaveRequests()
+                ->with(['leaveType', 'approver'])
+                ->orderBy('created_at', 'desc')
+                ->paginate(10);
+        }
+
+        return view('leave-requests.index', compact('requests'));
     }
 
     public function create()
     {
-        return view('leave-requests.create');
+        $leaveTypes = LeaveType::where('is_active', true)->get();
+        return view('leave-requests.create', compact('leaveTypes'));
     }
 
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'leave_type' => 'required|in:sick,vacation,personal,emergency',
+            'leave_type_id' => 'required|exists:leave_types,id',
             'start_date' => 'required|date|after_or_equal:today',
             'end_date' => 'required|date|after_or_equal:start_date',
             'reason' => 'required|string|max:500',
@@ -35,14 +51,14 @@ class LeaveRequestController extends Controller
 
         $startDate = Carbon::parse($validated['start_date']);
         $endDate = Carbon::parse($validated['end_date']);
-        $daysRequested = $startDate->diffInDays($endDate) + 1;
+        $totalDays = $startDate->diffInDays($endDate) + 1;
 
         LeaveRequest::create([
-            'user_id' => Auth::id(),
-            'leave_type' => $validated['leave_type'],
+            'user_id' => auth()->id(),
+            'leave_type_id' => $validated['leave_type_id'],
             'start_date' => $validated['start_date'],
             'end_date' => $validated['end_date'],
-            'days_requested' => $daysRequested,
+            'total_days' => $totalDays,
             'reason' => $validated['reason'],
         ]);
 
@@ -52,34 +68,40 @@ class LeaveRequestController extends Controller
 
     public function show(LeaveRequest $leaveRequest)
     {
-        // Check if user can view this request
-        if (!Auth::user()->isAdmin() && $leaveRequest->user_id !== Auth::id()) {
-            abort(403);
-        }
-
+        $this->authorize('view', $leaveRequest);
+        
+        $leaveRequest->load(['user', 'leaveType', 'approver']);
         return view('leave-requests.show', compact('leaveRequest'));
     }
 
-    public function updateStatus(Request $request, LeaveRequest $leaveRequest)
+    public function approve(LeaveRequest $leaveRequest)
     {
-        // Only admins can update status
-        if (!Auth::user()->isAdmin()) {
-            abort(403);
-        }
+        $this->authorize('approve', $leaveRequest);
 
-        $validated = $request->validate([
-            'status' => 'required|in:approved,rejected',
-            'admin_comment' => 'nullable|string|max:500',
+        $leaveRequest->update([
+            'status' => 'approved',
+            'approved_by' => auth()->id(),
+            'approved_at' => now(),
+        ]);
+
+        return redirect()->back()->with('success', 'Leave request approved successfully!');
+    }
+
+    public function reject(Request $request, LeaveRequest $leaveRequest)
+    {
+        $this->authorize('approve', $leaveRequest);
+
+        $request->validate([
+            'manager_comment' => 'required|string|max:500',
         ]);
 
         $leaveRequest->update([
-            'status' => $validated['status'],
-            'admin_comment' => $validated['admin_comment'],
-            'reviewed_by' => Auth::id(),
-            'reviewed_at' => now(),
+            'status' => 'rejected',
+            'approved_by' => auth()->id(),
+            'approved_at' => now(),
+            'manager_comment' => $request->manager_comment,
         ]);
 
-        return redirect()->route('leave-requests.index')
-            ->with('success', 'Leave request ' . $validated['status'] . ' successfully!');
+        return redirect()->back()->with('success', 'Leave request rejected.');
     }
 }
